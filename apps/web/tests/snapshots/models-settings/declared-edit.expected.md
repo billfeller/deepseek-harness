@@ -19,14 +19,18 @@
     - text: 关闭
   - heading "模型" [level=2]
   - paragraph: 填入各提供方的 API 密钥即可使用其模型。
-  - list:
+  - list "已配置的模型提供方":
     - listitem:
       - text: minimax-cn
       - img "API 密钥已配置"
+      - button "将 minimax-cn 上移" [disabled]
+      - button "将 minimax-cn 下移"
       - button "编辑 minimax-cn": 编辑
       - button "删除 minimax-cn": 删除
     - listitem:
       - text: Acme Gateway 自定义
+      - button "将 Acme Gateway (acme-gateway) 上移"
+      - button "将 Acme Gateway (acme-gateway) 下移" [disabled]
       - button "编辑 Acme Gateway (acme-gateway)": 编辑
       - button "删除 Acme Gateway (acme-gateway)": 删除
       - text: Acme Gateway acme-gateway API 密钥

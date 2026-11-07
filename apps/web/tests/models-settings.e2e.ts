@@ -30,6 +30,7 @@ const EMPTY_EXPECTED = join(SNAPSHOT_DIR, 'empty.expected.md')
 const CONFIGURED_EXPECTED = join(SNAPSHOT_DIR, 'configured.expected.md')
 const DECLARED_EXPECTED = join(SNAPSHOT_DIR, 'declared.expected.md')
 const DECLARED_EDIT_EXPECTED = join(SNAPSHOT_DIR, 'declared-edit.expected.md')
+const ORDERED_EXPECTED = join(SNAPSHOT_DIR, 'ordered.expected.md')
 const MODEL_PICKER_EXPECTED = join(SNAPSHOT_DIR, 'model-picker.expected.md')
 const NATIVE_DELETE_EXPECTED = join(SNAPSHOT_DIR, 'native-delete.expected.md')
 const DELETE_EXPECTED = join(SNAPSHOT_DIR, 'delete.expected.md')
@@ -70,7 +71,7 @@ describe('web e2e: Models settings page configures a dormant provider', () => {
     // The button enables once the dormant catalog lands in the join.
     await expect.poll(async () => add.isEnabled(), { timeout: 10_000 }).toBe(true)
     await add.click()
-    const pick = dialog.getByLabel('提供方')
+    const pick = dialog.getByLabel('提供方', { exact: true })
     await pick.waitFor({ timeout: 10_000 })
     await expect.poll(async () => pick.locator('option').count(), { timeout: 10_000 }).toBeGreaterThan(30)
     const options = await pick.locator('option').allTextContents()
@@ -282,6 +283,31 @@ describe('web e2e: Models settings page configures a dormant provider', () => {
     expect(tripwire.pageErrors).toEqual([])
   }, 60_000)
 
+  it('persists the provider order across a page reload', async () => {
+    onTestFailed(() => saveFailureShot(page, 'web-e2e-models-order'))
+    const dialog = page.getByRole('dialog', { name: '设置' })
+    const list = dialog.getByRole('list', { name: '已配置的模型提供方' })
+    await expect.poll(async () => list.getByRole('listitem').count(), { timeout: 10_000 }).toBeGreaterThan(1)
+    await list.getByRole('button', { name: '将 Acme 网关 (acme-gateway) 上移' }).click()
+    await expect.poll(async () => list.getByRole('listitem').first().innerText()).toContain('Acme 网关')
+
+    const snapshot = await captureStableAria(page, '[aria-label="已配置的模型提供方"]', scaffold.workspaceCwd)
+    await compareOrRefreshGolden(ORDERED_EXPECTED, snapshot, MODE)
+    const document = await readFile(join(scaffold.harnessHome, 'settings.yaml'), 'utf8')
+    expect(document).toContain('ui-models:')
+    expect(document).toContain('providerOrder:')
+    expect(document).toContain('- acme-gateway')
+
+    await page.reload({ waitUntil: 'load' })
+    await page.waitForSelector('[class*="frame"]', { timeout: 30_000 })
+    await page.getByRole('button', { name: '设置', exact: true }).click()
+    const reloadedDialog = page.getByRole('dialog', { name: '设置' })
+    await reloadedDialog.getByRole('button', { name: '模型' }).click()
+    const reloadedList = reloadedDialog.getByRole('list', { name: '已配置的模型提供方' })
+    await expect.poll(async () => reloadedList.getByRole('listitem').first().innerText()).toContain('Acme 网关')
+    expect(tripwire.pageErrors).toEqual([])
+  }, 60_000)
+
   it('confirms an identified provider deletion before removing its profile and key', async () => {
     onTestFailed(() => saveFailureShot(page, 'web-e2e-models-delete'))
     const settingsDialog = page.getByRole('dialog', { name: '设置' })
@@ -317,7 +343,7 @@ describe('web e2e: Models settings page configures a dormant provider', () => {
   it.skipIf(MODE === 'record')('keeps the fixture inventory closed', async () => {
     await assertFixtureInventory(SNAPSHOT_DIR, [
       'configured.expected.md', 'declared-edit.expected.md', 'declared.expected.md',
-      'delete.expected.md', 'empty.expected.md', 'model-picker.expected.md',
+      'delete.expected.md', 'empty.expected.md', 'model-picker.expected.md', 'ordered.expected.md',
       'native-delete.expected.md',
     ])
   })

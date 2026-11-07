@@ -11,8 +11,13 @@ import type {
 } from '@deepseek-ai/dsh-api-remotes/client'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
+import type { SettingsScope } from '@deepseek-ai/dsh-client-runtime/client'
 import type { SettingsDescribeFace } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { SettingsSchemaOperations } from './schema-operations.ts'
+import {
+  PROVIDER_ORDER_SETTINGS_FIELD,
+  type ProviderOrderSettings,
+} from '../provider-order-settings.ts'
 
 /**
  * Any route key walks a dict schema to the same profile node, so the lookup
@@ -45,6 +50,12 @@ export interface ModelsSettingsState {
   writable: boolean
   /** Every configurable provider joined with its configured/credential state. */
   rows: readonly ProviderRow[]
+  /** User preference for configured provider rows. */
+  providerOrder: readonly string[]
+  /** Whether the preference can be persisted by the current settings scope. */
+  providerOrderWritable: boolean
+  /** Why the last attempted order change was not retained, if it failed. */
+  providerOrderError: string | null
   /** Namespace views by ns, for the editor's schema/layers/secrets. */
   namespaces: ReadonlyMap<string, SettingsNamespaceView>
 }
@@ -108,11 +119,21 @@ function apiKeyEnvOf(
 export class ModelsSettingsStore {
   /** The snapshot the section renders from (uSES-safe store). */
   readonly store: SnapshotStore<ModelsSettingsState> = createSnapshotStore<ModelsSettingsState>({
-    status: 'idle', error: null, credentialError: null, writable: false, rows: [], namespaces: new Map(),
+    status: 'idle',
+    error: null,
+    credentialError: null,
+    writable: false,
+    rows: [],
+    providerOrder: [],
+    providerOrderWritable: true,
+    providerOrderError: null,
+    namespaces: new Map(),
   })
 
   /** Latest load wins; an older response never overwrites a newer one. */
   private generation = 0
+  private orderWriteGeneration = 0
+  private readonly unsubscribeOrder: (() => void) | undefined
 
   /**
    * @param api - the wire face (credentials/llm domains, and settings writes).
@@ -122,7 +143,61 @@ export class ModelsSettingsStore {
     private readonly api: Pick<IApiClient, 'settings' | 'credentials' | 'llm'>,
     private readonly schema: SettingsSchemaOperations,
     private readonly describeFace: SettingsDescribeFace,
-  ) {}
+    private readonly orderScope?: SettingsScope<ProviderOrderSettings>,
+  ) {
+    if (orderScope !== undefined) {
+      this.unsubscribeOrder = orderScope.subscribe(() => { this.adoptProviderOrder() })
+      this.adoptProviderOrder()
+    }
+  }
+
+  /** Stop following the settings preference when the Models plugin unloads. */
+  dispose(): void {
+    this.unsubscribeOrder?.()
+  }
+
+  /**
+   * Publish and persist a provider order. Host-backed writes are reconciled
+   * from the shared settings mirror; memory scopes retain the choice only for
+   * this browser process.
+   * @param order - provider route ids in the visible order.
+   */
+  setProviderOrder(order: readonly string[]): void {
+    const scope = this.orderScope
+    const snapshot = scope?.getSnapshot()
+    if (snapshot?.mode === 'host' && !snapshot.writable) return
+    this.store.update((state) => {
+      state.providerOrder = [...order]
+      state.providerOrderError = null
+    })
+    if (scope === undefined || snapshot?.mode !== 'host') return
+
+    const generation = ++this.orderWriteGeneration
+    const recover = (): void => {
+      if (generation !== this.orderWriteGeneration) return
+      const current = scope.getSnapshot().value?.[PROVIDER_ORDER_SETTINGS_FIELD] ?? []
+      const persisted = [...current]
+      this.store.update((state) => {
+        state.providerOrder = persisted
+        state.providerOrderError = sameOrder(persisted, order)
+          ? null
+          : 'The provider order could not be saved.'
+      })
+    }
+    void scope.set(PROVIDER_ORDER_SETTINGS_FIELD, [...order]).then(recover, recover)
+  }
+
+  private adoptProviderOrder(): void {
+    const scope = this.orderScope
+    if (scope === undefined) return
+    const snapshot = scope.getSnapshot()
+    this.store.update((state) => {
+      state.providerOrderWritable = snapshot.mode === 'memory' || snapshot.writable
+      if (snapshot.mode === 'memory') return
+      state.providerOrder = [...(snapshot.value?.[PROVIDER_ORDER_SETTINGS_FIELD] ?? [])]
+      state.providerOrderError = null
+    })
+  }
 
   /**
    * Refresh the whole page snapshot: the provider directory and the mirror's
@@ -206,6 +281,59 @@ export class ModelsSettingsStore {
       s.namespaces = namespaces
     })
   }
+}
+
+/**
+ * Apply the persisted preference to joined rows without changing the
+ * directory's order for providers the user has not ranked.
+ * @param rows - configured provider rows in directory order.
+ * @param order - route ids in the user's preferred order.
+ * @returns a reordered copy of the rows.
+ */
+export function orderProviderRows(
+  rows: readonly ProviderRow[],
+  order: readonly string[],
+): ProviderRow[] {
+  if (order.length === 0) return [...rows]
+  const rank = new Map<string, number>()
+  order.forEach((provider, index) => {
+    if (!rank.has(provider)) rank.set(provider, index)
+  })
+  return rows
+    .map((row, index) => ({ row, index, rank: rank.get(row.entry.provider) }))
+    .sort((left, right) => {
+      if (left.rank === undefined) return right.rank === undefined ? left.index - right.index : 1
+      if (right.rank === undefined) return -1
+      return left.rank - right.rank || left.index - right.index
+    })
+    .map(({ row }) => row)
+}
+
+/**
+ * Replace the ranked visible slots with a reordered visible list while
+ * retaining absent route ids at their existing ranks.
+ * @param current - saved route ids, including routes absent from the directory.
+ * @param visibleOrder - currently configured route ids in their new order.
+ * @returns the updated preference with previously unranked visible routes appended.
+ */
+export function mergeProviderOrder(
+  current: readonly string[],
+  visibleOrder: readonly string[],
+): string[] {
+  const visible = new Set(visibleOrder)
+  let nextVisible = 0
+  const next = [...new Set(current)].map((provider) => {
+    if (!visible.has(provider)) return provider
+    const replacement = visibleOrder[nextVisible]
+    if (replacement === undefined) return provider
+    nextVisible += 1
+    return replacement
+  })
+  return [...next, ...visibleOrder.slice(nextVisible)]
+}
+
+function sameOrder(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((provider, index) => provider === right[index])
 }
 
 /**

@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest'
 import type { RpcResponse } from '@deepseek-ai/dsh-api-remotes/client'
 import { SettingsDescribeMirror } from '@deepseek-ai/dsh-client-ui-settings/src/client/settings-mirror.ts'
 import { settingsSchema } from './settings-schema.client.ts'
-import { messageOf, ModelsSettingsStore } from '../src/client/store.ts'
+import {
+  mergeProviderOrder, messageOf, ModelsSettingsStore, orderProviderRows,
+} from '../src/client/store.ts'
 
 let nextRpc = 0
 function ok<T>(value: T): RpcResponse<T> {
@@ -72,7 +74,38 @@ function api(overrides: {
   return { face: wire, mirror: new SettingsDescribeMirror(wire), seenRefs }
 }
 
+function providerOrderScope(initial: string[]) {
+  const listeners = new Set<() => void>()
+  let value = { providerOrder: [...initial] }
+  const writes: unknown[][] = []
+  const scope = {
+    getSnapshot: () => ({
+      status: 'ready',
+      value,
+      writable: true,
+      mode: 'host',
+    }),
+    subscribe: (listener: () => void) => {
+      listeners.add(listener)
+      return () => { listeners.delete(listener) }
+    },
+    set: async (field: string, next: unknown) => {
+      writes.push([field, next])
+      value = { providerOrder: next as string[] }
+      for (const listener of listeners) listener()
+    },
+  }
+  return { scope: scope as never, writes }
+}
+
 describe('ModelsSettingsStore', () => {
+  it('keeps absent provider ids at their saved ranks when visible rows move', () => {
+    expect(mergeProviderOrder(['first', 'removed', 'second'], ['second', 'first'])).toEqual([
+      'second', 'removed', 'first',
+    ])
+    expect(mergeProviderOrder([], ['second', 'first'])).toEqual(['second', 'first'])
+  })
+
   it('joins rows with configured, removable, and credential state', async () => {
     const { face, mirror, seenRefs } = api()
     const store = new ModelsSettingsStore(face, settingsSchema, mirror)
@@ -99,6 +132,39 @@ describe('ModelsSettingsStore', () => {
     expect(byProvider.get('anthropic')?.apiKeyEnv).toBeUndefined()
     expect(byProvider.get('ghost')).toMatchObject({ configured: false, removable: false })
     expect(state.namespaces.get('llm-pi-ai')?.ns).toBe('llm-pi-ai')
+  })
+
+  it('keeps the directory default, applies saved order, and persists moves', async () => {
+    const { face, mirror } = api()
+    const persisted = providerOrderScope(['openai', 'removed-provider'])
+    const store = new ModelsSettingsStore(face, settingsSchema, mirror, persisted.scope)
+    await store.load()
+    const configured = store.store.getSnapshot().rows.filter(row => row.configured)
+    expect(configured.map(row => row.entry.provider)).toEqual([
+      'deepseek-official', 'openai',
+    ])
+    expect(orderProviderRows(configured, []).map(row => row.entry.provider)).toEqual([
+      'deepseek-official', 'openai',
+    ])
+    expect(orderProviderRows(configured, store.store.getSnapshot().providerOrder)
+      .map(row => row.entry.provider)).toEqual(['openai', 'deepseek-official'])
+
+    store.setProviderOrder(['deepseek-official', 'openai', 'removed-provider'])
+    expect(store.store.getSnapshot().providerOrder).toEqual([
+      'deepseek-official', 'openai', 'removed-provider',
+    ])
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(persisted.writes).toEqual([[
+      'providerOrder', ['deepseek-official', 'openai', 'removed-provider'],
+    ]])
+    expect(store.store.getSnapshot().providerOrderError).toBeNull()
+
+    await store.load()
+    expect(store.store.getSnapshot().providerOrder).toEqual([
+      'deepseek-official', 'openai', 'removed-provider',
+    ])
+    store.dispose()
   })
 
   it('degrades the credential badge, not the page, when the credential domain fails', async () => {

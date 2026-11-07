@@ -20,10 +20,12 @@
   - heading "模型" [level=2]
   - paragraph: 填入各提供方的 API 密钥即可使用其模型。
   - status: 已保存 minimax-cn。
-  - list:
+  - list "已配置的模型提供方":
     - listitem:
       - text: minimax-cn
       - img "API 密钥已配置"
+      - button "将 minimax-cn 上移" [disabled]
+      - button "将 minimax-cn 下移" [disabled]
       - button "编辑 minimax-cn": 编辑
       - button "删除 minimax-cn": 删除
   - button "添加提供方":

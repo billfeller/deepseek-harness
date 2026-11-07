@@ -1,0 +1,14 @@
+- list "已配置的模型提供方":
+  - listitem:
+    - text: Acme 网关 自定义
+    - button "将 Acme 网关 (acme-gateway) 上移" [disabled]
+    - button "将 Acme 网关 (acme-gateway) 下移"
+    - button "编辑 Acme 网关 (acme-gateway)": 编辑
+    - button "删除 Acme 网关 (acme-gateway)": 删除
+  - listitem:
+    - text: minimax-cn
+    - img "API 密钥已配置"
+    - button "将 minimax-cn 上移"
+    - button "将 minimax-cn 下移" [disabled]
+    - button "编辑 minimax-cn": 编辑
+    - button "删除 minimax-cn": 删除

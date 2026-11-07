@@ -26,6 +26,10 @@ import { ModelsSettingsStore } from './store.ts'
 import { createSettingsSchemaOperations } from './schema-operations.ts'
 import { en, zh, type ModelsKey } from './locales.ts'
 import { WELCOME_NOTICE_SETTINGS_NAMESPACE } from '../onboarding-copy.ts'
+import {
+  PROVIDER_ORDER_SETTINGS_NAMESPACE,
+  type ProviderOrderSettings,
+} from '../provider-order-settings.ts'
 
 export type { ModelsSectionInjected, ModelsSectionProps } from './ModelsSection.tsx'
 export type { ModelsKey } from './locales.ts'
@@ -69,7 +73,15 @@ export function apply(ctx: ClientContext): void {
 
   const connection = ctx.get('connection') as ConnectionHandle
   const schema = createSettingsSchemaOperations(ctx.settingsSchema)
-  const controller = new ModelsSettingsStore(connection.api, schema, ctx.settingsScope.describe())
+  const providerOrderScope = ctx.settingsScope.bind<ProviderOrderSettings>({
+    namespace: PROVIDER_ORDER_SETTINGS_NAMESPACE,
+  })
+  const controller = new ModelsSettingsStore(
+    connection.api,
+    schema,
+    ctx.settingsScope.describe(),
+    providerOrderScope,
+  )
   // Registration-time text (the nav label thunk) and the inject faces share
   // one bound translate; copy freshness rides the locale revision.
   const t = ctx.locale.bind(NS) as ModelsSectionInjected['t']
@@ -113,6 +125,7 @@ export function apply(ctx: ClientContext): void {
       ctx.on('connection/reset', refreshModels),
     ]
     return () => {
+      controller.dispose()
       welcomeController.dispose()
       for (const dispose of disposers) dispose()
     }

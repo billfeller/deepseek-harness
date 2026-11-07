@@ -13,12 +13,14 @@
  */
 
 import { useState } from 'react'
-import type { ReactNode } from 'react'
+import type { DragEvent, ReactNode } from 'react'
 import type { IApiClient } from '@deepseek-ai/dsh-api-remotes/client'
 import { Button, IconPlusOutline16, Modal } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { InjectFace } from '@deepseek-ai/dsh-client-ui-slots'
 import { CustomProviderCard } from './CustomProviderCard.tsx'
-import { deriveKeyRef, messageOf, protocolChoices, providerUsable } from './store.ts'
+import {
+  deriveKeyRef, mergeProviderOrder, messageOf, orderProviderRows, protocolChoices, providerUsable,
+} from './store.ts'
 import type { ModelsSettingsStore, ProviderRow } from './store.ts'
 import type { SettingsSchemaOperations } from './schema-operations.ts'
 import { ProviderEditor, type ProviderEditorProps } from './ProviderEditor.tsx'
@@ -195,6 +197,8 @@ function Loaded({ injected }: { injected: ModelsSectionFace }): ReactNode {
   const [savedTarget, setSavedTarget] = useState<ProviderIdentity | undefined>(undefined)
   const [declaring, setDeclaring] = useState(false)
   const [dismissedSetup, setDismissedSetup] = useState<ReadonlySet<string>>(() => new Set())
+  const [draggingProvider, setDraggingProvider] = useState<string | undefined>(undefined)
+  const [orderAnnouncement, setOrderAnnouncement] = useState('')
 
   const announceSaved = (target: ProviderIdentity): void => {
     // Announced only once the refreshed directory is in the snapshot the
@@ -273,6 +277,7 @@ function Loaded({ injected }: { injected: ModelsSectionFace }): ReactNode {
   // step: whether the user already has a provider to talk to.
   const anyUsable = state.rows.some(providerUsable)
   const configured = state.rows.filter(row => row.configured)
+  const orderedConfigured = orderProviderRows(configured, state.providerOrder)
   const addable = state.rows.filter(row => !row.configured && row.entry.settingsNs !== '')
   const addTarget = adding ? editing : undefined
   const addNamespace = addTarget === undefined ? undefined : state.namespaces.get(addTarget.settingsNs)
@@ -281,11 +286,79 @@ function Loaded({ injected }: { injected: ModelsSectionFace }): ReactNode {
   // there is nothing to declare and the entry point stays disabled.
   const protocols = protocolChoices(state.namespaces.get('llm-pi-ai'), schema)
 
+  const moveProvider = (provider: string, toIndex: number): void => {
+    const fromIndex = orderedConfigured.findIndex(row => row.entry.provider === provider)
+    if (
+      fromIndex < 0 || toIndex < 0 || toIndex >= orderedConfigured.length
+      || fromIndex === toIndex
+    ) return
+    const next = [...orderedConfigured]
+    const [moved] = next.splice(fromIndex, 1)
+    if (moved === undefined) return
+    next.splice(toIndex, 0, moved)
+    controller.setProviderOrder(mergeProviderOrder(
+      state.providerOrder,
+      next.map(row => row.entry.provider),
+    ))
+    setOrderAnnouncement(
+      providerCopy(t('providerMoved'), targetOf(moved)).replace('{position}', String(toIndex + 1)),
+    )
+  }
+
+  const dragProps = (provider: string, position: number) => ({
+    draggable: state.providerOrderWritable,
+    onDragStart: (event: DragEvent<HTMLLIElement>) => {
+      event.dataTransfer.effectAllowed = 'move'
+      event.dataTransfer.setData('text/plain', provider)
+      setDraggingProvider(provider)
+    },
+    onDragOver: (event: DragEvent<HTMLLIElement>) => {
+      event.preventDefault()
+      event.dataTransfer.dropEffect = 'move'
+    },
+    onDrop: (event: DragEvent<HTMLLIElement>) => {
+      event.preventDefault()
+      const source = event.dataTransfer.getData('text/plain') || draggingProvider
+      if (source !== undefined) moveProvider(source, position)
+      setDraggingProvider(undefined)
+    },
+    onDragEnd: () => { setDraggingProvider(undefined) },
+  })
+
+  const orderActions = (row: ProviderRow, position: number): ReactNode => (
+    <span className={styles['orderActions']}>
+      <button
+        type="button"
+        className={styles['orderButton']}
+        aria-label={providerCopy(t('moveProviderUp'), targetOf(row))}
+        disabled={!state.providerOrderWritable || position === 0}
+        onClick={() => { moveProvider(row.entry.provider, position - 1) }}
+      >
+        <span aria-hidden="true">↑</span>
+      </button>
+      <button
+        type="button"
+        className={styles['orderButton']}
+        aria-label={providerCopy(t('moveProviderDown'), targetOf(row))}
+        disabled={!state.providerOrderWritable || position === orderedConfigured.length - 1}
+        onClick={() => { moveProvider(row.entry.provider, position + 1) }}
+      >
+        <span aria-hidden="true">↓</span>
+      </button>
+    </span>
+  )
+
   return (
     <div className={styles['section']}>
       <h2 className={styles['title']}>{t('title')}</h2>
       <p className={styles['intro']}>{t('intro')}</p>
       {!state.writable && state.status === 'ready' ? <p className={styles['notice']}>{t('readOnly')}</p> : null}
+      {state.providerOrderError === null
+        ? null
+        : <p className={styles['notice']} role="alert">{t('providerOrderSaveFailed')}</p>}
+      {orderAnnouncement === ''
+        ? null
+        : <p className={styles['hiddenLabel']} role="status" aria-live="polite">{orderAnnouncement}</p>}
       {savedIdentity === undefined
         ? null
         : (
@@ -293,8 +366,8 @@ function Loaded({ injected }: { injected: ModelsSectionFace }): ReactNode {
             {providerCopy(t('savedProvider'), savedIdentity)}
           </p>
         )}
-      <ul className={styles['rows']}>
-        {configured.map((row) => {
+      <ul className={styles['rows']} aria-label={t('providerOrder')}>
+        {orderedConfigured.map((row, position) => {
           const target = targetOf(row)
           const namespace = state.namespaces.get(target.settingsNs)
           /* v8 ignore next -- the join marks a row configured only when its namespace resolved */
@@ -303,7 +376,12 @@ function Loaded({ injected }: { injected: ModelsSectionFace }): ReactNode {
             // First-run posture: the provider exists but has no key — the
             // setup card IS its presence on the page, until the user closes it.
             return (
-              <li key={row.entry.provider} className={styles['setupCard']}>
+              <li
+                key={row.entry.provider}
+                className={`${styles['setupCard']} ${draggingProvider === row.entry.provider ? styles['rowDragging'] : ''}`}
+                {...dragProps(row.entry.provider, position)}
+              >
+                {orderActions(row, position)}
                 {renderProviderEditor({
                   target,
                   namespace,
@@ -322,7 +400,11 @@ function Loaded({ injected }: { injected: ModelsSectionFace }): ReactNode {
             && row.apiKeyEnv !== undefined
             && row.credential?.configured === false
           return (
-            <li key={row.entry.provider} className={styles['rowCard']}>
+            <li
+              key={row.entry.provider}
+              className={`${styles['rowCard']} ${draggingProvider === row.entry.provider ? styles['rowDragging'] : ''}`}
+              {...dragProps(row.entry.provider, position)}
+            >
               <div className={styles['rowHead']}>
                 <span className={styles['rowIdentity']}>
                   <span className={styles['rowName']}>{row.entry.displayName}</span>
@@ -353,6 +435,7 @@ function Loaded({ injected }: { injected: ModelsSectionFace }): ReactNode {
                       : null}
                 </span>
                 <span className={styles['rowActions']}>
+                  {orderActions(row, position)}
                   <button
                     type="button"
                     className={styles['secondaryButton']}

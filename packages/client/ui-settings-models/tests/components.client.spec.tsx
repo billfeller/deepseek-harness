@@ -264,6 +264,25 @@ describe('ModelsSection', () => {
     expect(screen.getByLabelText(en.keyInput)).toBeTruthy()
   })
 
+  it('reorders configured providers with accessible controls', async () => {
+    await mountSection()
+    const list = screen.getByRole('list', { name: en.providerOrder })
+    const rows = (): HTMLElement[] => within(list).getAllByRole('listitem')
+    expect(rows()[0]?.textContent).toContain('DeepSeek')
+    expect(rows()[1]?.textContent).toContain('openai')
+
+    fireEvent.click(within(list).getByRole('button', { name: deepSeekCopy(en.moveProviderDown) }))
+    expect(rows()[0]?.textContent).toContain('openai')
+    expect(rows()[1]?.textContent).toContain('DeepSeek')
+    expect(screen.getByRole('status').textContent).toBe(
+      deepSeekCopy(en.providerMoved).replace('{position}', '2'),
+    )
+
+    fireEvent.click(within(list).getByRole('button', { name: deepSeekCopy(en.moveProviderUp) }))
+    expect(rows()[0]?.textContent).toContain('DeepSeek')
+    expect(rows()[1]?.textContent).toContain('openai')
+  })
+
   it('marks only a confirmed missing reference and leaves native or unavailable state unmarked', async () => {
     const { face } = scriptedFace()
     face.credentials.describe.mockImplementation((payload: { refs: string[] }) => Promise.resolve(ok({
